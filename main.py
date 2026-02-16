@@ -8,6 +8,7 @@ from aiogram.types import Message, ChatMemberUpdated, ContentType
 from aiogram.client.default import DefaultBotProperties
 from aiogram.exceptions import TelegramBadRequest
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from aiohttp import web
 
 # --- НАСТРОЙКИ ---
 TOKEN = "8463010853:AAE7piw8PFlxNCzKw9vIrmdJmTYAm1rBnuI"
@@ -17,6 +18,21 @@ DB_FILE = "dragon_data.json"
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
 dp = Dispatcher()
 scheduler = AsyncIOScheduler(timezone="Europe/Moscow")
+
+# --- ВЕБ-СЕРВЕР ДЛЯ ПОДДЕРЖКИ ЖИЗНИ ---
+async def handle(request):
+    return web.Response(text="Бот активен!")
+
+async def start_web_server():
+    app = web.Application()
+    app.router.add_get('/', handle)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    # Render передает порт в переменной окружения PORT
+    port = int(os.environ.get("PORT", 8080))
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+    print(f"Веб-сервер запущен на порту {port}")
 
 # --- БАЗА ДАННЫХ ---
 def load_db():
@@ -54,7 +70,7 @@ async def has_access(message: Message, cmd_name: str):
         return False
     return True
 
-# --- КОМАНДЫ РАНГОВ ---
+# --- КОМАНДЫ ---
 @dp.message(Command("повысить", prefix="!"))
 async def promote_user(message: Message, command: CommandObject):
     if not await has_access(message, "повысить"): return
@@ -81,7 +97,6 @@ async def demote_user(message: Message):
     save_db(db)
     await message.answer(f"📉 Викинг <b>{u['nick']}</b> разжалован до 1 ⭐")
 
-# --- МОДЕРАЦИЯ ---
 @dp.message(Command("бан", "мут", "варн", "кик", prefix="!"))
 async def moderate(message: Message):
     cmd = message.text[1:].split()[0].lower()
@@ -108,19 +123,6 @@ async def moderate(message: Message):
         await message.answer(f"{u['nick']} в муте на 10 мин.")
     save_db(db)
 
-# --- ИНФО ---
-@dp.message(F.text.lower() == "кто админ")
-async def who_is_admin(message: Message):
-    admins = [f"• <a href='tg://user?id={uid}'>{u['nick']}</a> — {u['stars']} ⭐" for uid, u in db["users"].items() if u["stars"] >= 2]
-    resp = "<b>📜 Администрация Стаи:</b>\n" + "\n".join(admins) if admins else "В стае только Вожак."
-    await message.answer(resp)
-
-@dp.message(F.text.startswith("+ник "))
-async def set_nick(message: Message):
-    new_nick = message.text[5:].strip()[:20]
-    u = get_u(message.from_user.id); u["nick"] = new_nick
-    save_db(db); await message.answer(f"Теперь ты <b>{new_nick}</b>")
-
 @dp.message(F.text.lower() == "топ акт")
 async def top_act(message: Message):
     sorted_u = sorted(db["users"].items(), key=lambda x: x[1]["messages"], reverse=True)[:30]
@@ -129,22 +131,17 @@ async def top_act(message: Message):
         res += f"{i}. <a href='tg://user?id={uid}'>{data['nick']}</a> — {data['messages']} мсг.\n"
     await message.answer(res)
 
-# --- ПРИВЕТСТВИЯ (ИСПРАВЛЕНО) ---
 @dp.chat_member()
 async def member_update(event: ChatMemberUpdated):
     if event.new_chat_member.status == "member":
         welcome_text = (
             "Привет!\nДобро пожаловать в Драконий край 🐲\n\n"
-            "Рады видеть тебя в нашем чате. Здесь собираются люди, которым близка вселенная «Как приручить дракона»: "
-            "обсуждения, теории, размышления и живое общение — без лишнего шума и конфликтов\n\n"
-            "Чувствуй себя комфортно, знакомься, участвуй в разговорах — будем рады твоему присутствию 😀\n"
-            "Если возникнут вопросы или понадобится помощь, смело обращайся к администрации\n\n"
+            "Рады видеть тебя в нашем чате. Здесь собираются люди, которым близка вселенная «Как приручить дракона».\n\n"
             "Приятного общения и хорошего дня 🐉✨"
         )
         try: await bot.send_animation(event.chat.id, "https://media1.tenor.com/m/-5D-bYxCvFAAAAAC/httyd-yeah.gif", caption=welcome_text)
         except: pass
 
-# --- ОБРАБОТЧИК ---
 @dp.message()
 async def main_handler(msg: Message):
     if not msg.from_user or msg.from_user.is_bot: return
@@ -178,12 +175,15 @@ async def scheduled_msg(text, gif):
     except: pass
 
 async def main():
+    # Запускаем веб-сервер вместе с ботом
+    asyncio.create_task(start_web_server())
+    
     scheduler.add_job(scheduled_msg, "cron", hour=9, minute=0, args=["Доброе утро!", "https://media1.tenor.com/m/TphIrQuFImkAAAAC/drake-how-to-train-your-dragon.gif"])
     scheduler.add_job(scheduled_msg, "cron", hour=22, minute=0, args=["Сладких снов!", "https://media1.tenor.com/m/C3P-yay4lF8AAAAC/httyd-ruffnut.gif"])
     scheduler.start()
+    
     print("Бот успешно запущен!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())
-    
