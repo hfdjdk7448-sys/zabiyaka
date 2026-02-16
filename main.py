@@ -6,6 +6,7 @@ from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command, CommandObject
 from aiogram.types import Message, ChatMemberUpdated, ContentType
 from aiogram.client.default import DefaultBotProperties
+from aiogram.exceptions import TelegramBadRequest
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 # --- НАСТРОЙКИ ---
@@ -17,18 +18,18 @@ bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
 dp = Dispatcher()
 scheduler = AsyncIOScheduler(timezone="Europe/Moscow")
 
-# --- ЛОГИКА БАЗЫ ДАННЫХ ---
+# --- БАЗА ДАННЫХ ---
 def load_db():
     if os.path.exists(DB_FILE):
         try:
             with open(DB_FILE, "r", encoding="utf-8") as f:
                 return json.load(f)
-        except:
-            pass
+        except: pass
     return {
         "users": {}, 
         "permissions": {"бан": 5, "мут": 4, "варн": 3, "кик": 3, "кд": 5, "повысить": 5, "понизить": 5},
-        "media_counter": {}
+        "media_counter": {},
+        "media_history": {}  # Для хранения ID сообщений спама
     }
 
 def save_db(data):
@@ -53,23 +54,19 @@ async def has_access(message: Message, cmd_name: str):
         return False
     return True
 
-# --- КОМАНДЫ УПРАВЛЕНИЯ РАНГОМ ---
-
+# --- КОМАНДЫ РАНГОВ ---
 @dp.message(Command("повысить", prefix="!"))
 async def promote_user(message: Message, command: CommandObject):
     if not await has_access(message, "повысить"): return
     if not message.reply_to_message: return await message.reply("Ответь на сообщение того, кого хочешь повысить!")
-    
     target = message.reply_to_message.from_user
     u = get_u(target.id, target.first_name)
-    
     new_rank = u["stars"] + 1
     if command.args:
         try:
             val = int(command.args)
             if 1 <= val <= 5: new_rank = val
         except: pass
-    
     if new_rank > 5: new_rank = 5
     u["stars"] = new_rank
     save_db(db)
@@ -79,25 +76,20 @@ async def promote_user(message: Message, command: CommandObject):
 async def demote_user(message: Message):
     if not await has_access(message, "понизить"): return
     if not message.reply_to_message: return await message.reply("Ответь на сообщение того, кого хочешь понизить!")
-    
     target = message.reply_to_message.from_user
     u = get_u(target.id, target.first_name)
-    
     u["stars"] = 1
     save_db(db)
     await message.answer(f"📉 Викинг <b>{u['nick']}</b> разжалован до 1 ⭐")
 
-# --- КОМАНДЫ МОДЕРАЦИИ ---
-
+# --- МОДЕРАЦИЯ ---
 @dp.message(Command("бан", "мут", "варн", "кик", prefix="!"))
 async def moderate(message: Message):
     cmd = message.text[1:].split()[0].lower()
     if not await has_access(message, cmd): return
     if not message.reply_to_message: return await message.reply("Нужен ответ на сообщение нарушителя!")
-    
     target = message.reply_to_message.from_user
     u = get_u(target.id)
-    
     if cmd == "варн":
         u["warns"].append(datetime.now().strftime("%d.%m %H:%M"))
         if len(u["warns"]) >= 5:
@@ -117,8 +109,7 @@ async def moderate(message: Message):
         await message.answer(f"{u['nick']} в муте на 10 мин.")
     save_db(db)
 
-# --- ИНФО КОМАНДЫ ---
-
+# --- ИНФОРМАЦИЯ ---
 @dp.message(F.text.lower() == "кто админ")
 async def who_is_admin(message: Message):
     admins = [f"• <a href='tg://user?id={uid}'>{u['nick']}</a> — {u['stars']} ⭐" for uid, u in db["users"].items() if u["stars"] >= 2]
@@ -163,11 +154,10 @@ async def member_update(event: ChatMemberUpdated):
             "Если возникнут вопросы или понадобится помощь, смело обращайся к администрации\n\n"
             "Приятного общения и хорошего дня 🐉✨"
         )
-        try:
-            await bot.send_animation(event.chat.id, "https://media1.tenor.com/m/-5D-bYxCvFAAAAAC/httyd-yeah.gif", caption=welcome_text)
+        try: await bot.send_animation(event.chat.id, "https://media1.tenor.com/m/-5D-bYxCvFAAAAAC/httyd-yeah.gif", caption=welcome_text)
         except: pass
 
-# --- ОБЩИЙ ОБРАБОТЧИК ---
+# --- ОБРАБОТЧИК (АНТИСПАМ С УДАЛЕНИЕМ) ---
 @dp.message()
 async def main_handler(msg: Message):
     if not msg.from_user or msg.from_user.is_bot: return
@@ -179,16 +169,28 @@ async def main_handler(msg: Message):
     
     if is_media:
         db["media_counter"][uid] = db["media_counter"].get(uid, 0) + 1
+        if uid not in db["media_history"]: db["media_history"][uid] = []
+        db["media_history"][uid].append(msg.message_id)
+        
         if db["media_counter"][uid] >= 5:
-            u["warns"].append("Спам медиа")
-            until = datetime.now() + timedelta(minutes=1)
+            # 1. Выдаем варн
+            u["warns"].append("Авто-удаление: Спам медиа")
+            # 2. Мутим
+            until = datetime.now() + timedelta(minutes=5)
             try:
                 await msg.chat.restrict(msg.from_user.id, permissions=types.ChatPermissions(can_send_messages=False), until_date=until)
-                await msg.reply("🛡 Мут 1 мин за спам медиа.")
+                # 3. Удаляем все сообщения из истории спама
+                for msg_id in db["media_history"][uid]:
+                    try: await bot.delete_message(msg.chat.id, msg_id)
+                    except TelegramBadRequest: pass
+                await msg.answer(f"🛡 <b>{u['nick']}</b>, спам удален. Мут на 5 мин + Варн.")
             except: pass
             db["media_counter"][uid] = 0
+            db["media_history"][uid] = []
     else:
         db["media_counter"][uid] = 0
+        db["media_history"][uid] = []
+        
     save_db(db)
 
 async def scheduled_msg(text, gif):
@@ -204,4 +206,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-        
+    
