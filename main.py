@@ -13,7 +13,6 @@ TOKEN = "8463010853:AAE7piw8PFlxNCzKw9vIrmdJmTYAm1rBnuI"
 CHAT_ID = -1002508735096  
 DB_FILE = "dragon_data.json"
 
-# Инициализация бота
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
 dp = Dispatcher()
 scheduler = AsyncIOScheduler(timezone="Europe/Moscow")
@@ -28,7 +27,7 @@ def load_db():
             pass
     return {
         "users": {}, 
-        "permissions": {"бан": 5, "мут": 4, "варн": 3, "кик": 3, "кд": 5},
+        "permissions": {"бан": 5, "мут": 4, "варн": 3, "кик": 3, "кд": 5, "повысить": 5, "понизить": 5},
         "media_counter": {}
     }
 
@@ -42,12 +41,7 @@ def get_u(uid, name="Викинг"):
     uid = str(uid)
     if uid not in db["users"]:
         is_first = len(db["users"]) == 0
-        db["users"][uid] = {
-            "nick": name, 
-            "stars": 5 if is_first else 1, 
-            "messages": 0, 
-            "warns": []
-        }
+        db["users"][uid] = {"nick": name, "stars": 5 if is_first else 1, "messages": 0, "warns": []}
         save_db(db)
     return db["users"][uid]
 
@@ -59,50 +53,47 @@ async def has_access(message: Message, cmd_name: str):
         return False
     return True
 
-# --- КОМАНДЫ ---
-@dp.message(F.text.lower() == "кто админ")
-async def who_is_admin(message: Message):
-    admins = []
-    for uid, u in db["users"].items():
-        if u["stars"] >= 2:
-            admins.append(f"• <a href='tg://user?id={uid}'>{u['nick']}</a> — {u['stars']} ⭐")
-    resp = "<b>📜 Администрация Стаи:</b>\n" + "\n".join(admins) if admins else "В стае пока только один Вожак."
-    await message.answer(resp)
+# --- КОМАНДЫ УПРАВЛЕНИЯ РАНГОМ ---
 
-@dp.message(Command("кд"))
-async def setup_kd(message: Message, command: CommandObject):
-    if not await has_access(message, "кд"): return
-    try:
-        args = command.args.split()
-        cmd, rank = args[0].lower(), int(args[1])
-        db["permissions"][cmd] = rank
-        save_db(db)
-        await message.answer(f"✅ Команда <b>{cmd}</b> теперь от {rank} ⭐")
-    except:
-        await message.answer("Пример: <code>!кд бан 5</code>")
-
-@dp.message(F.text.startswith("+ник "))
-async def set_nick(message: Message):
-    new_nick = message.text[5:].strip()
-    if len(new_nick) > 20: return await message.reply("Ник слишком длинный!")
-    u = get_u(message.from_user.id)
-    u["nick"] = new_nick
+@dp.message(Command("повысить", prefix="!"))
+async def promote_user(message: Message, command: CommandObject):
+    if not await has_access(message, "повысить"): return
+    if not message.reply_to_message: return await message.reply("Ответь на сообщение того, кого хочешь повысить!")
+    
+    target = message.reply_to_message.from_user
+    u = get_u(target.id, target.first_name)
+    
+    new_rank = u["stars"] + 1
+    if command.args:
+        try:
+            val = int(command.args)
+            if 1 <= val <= 5: new_rank = val
+        except: pass
+    
+    if new_rank > 5: new_rank = 5
+    u["stars"] = new_rank
     save_db(db)
-    await message.answer(f"Теперь ты <b>{new_nick}</b>")
+    await message.answer(f"📈 Викинг <b>{u['nick']}</b> повышен до {u['stars']} ⭐")
 
-@dp.message(F.text.lower() == "топ акт")
-async def top_act(message: Message):
-    sorted_u = sorted(db["users"].items(), key=lambda x: x[1]["messages"], reverse=True)[:30]
-    res = "<b>🏆 Топ активности:</b>\n\n"
-    for i, (uid, data) in enumerate(sorted_u, 1):
-        res += f"{i}. <a href='tg://user?id={uid}'>{data['nick']}</a> — {data['messages']} мсг.\n"
-    await message.answer(res)
+@dp.message(Command("понизить", prefix="!"))
+async def demote_user(message: Message):
+    if not await has_access(message, "понизить"): return
+    if not message.reply_to_message: return await message.reply("Ответь на сообщение того, кого хочешь понизить!")
+    
+    target = message.reply_to_message.from_user
+    u = get_u(target.id, target.first_name)
+    
+    u["stars"] = 1
+    save_db(db)
+    await message.answer(f"📉 Викинг <b>{u['nick']}</b> разжалован до 1 ⭐")
 
-@dp.message(Command("бан", "мут", "варн", prefix="!"))
+# --- КОМАНДЫ МОДЕРАЦИИ ---
+
+@dp.message(Command("бан", "мут", "варн", "кик", prefix="!"))
 async def moderate(message: Message):
     cmd = message.text[1:].split()[0].lower()
     if not await has_access(message, cmd): return
-    if not message.reply_to_message: return await message.reply("Ответь на сообщение нарушителя!")
+    if not message.reply_to_message: return await message.reply("Нужен ответ на сообщение нарушителя!")
     
     target = message.reply_to_message.from_user
     u = get_u(target.id)
@@ -116,15 +107,67 @@ async def moderate(message: Message):
             await message.answer_animation("https://media1.tenor.com/m/2DfpWS8cP48AAAAd/tuffnut-ruffnut.gif", 
                                            caption=f"Варн {u['nick']} ({len(u['warns'])}/5)")
     elif cmd == "бан":
-        await message.chat.ban(target.id)
-        await message.answer(f"Изгнан {u['nick']}!")
+        await message.chat.ban(target.id); await message.answer(f"Изгнан {u['nick']}!")
+    elif cmd == "кик":
+        await message.chat.ban(target.id); await message.chat.unban(target.id)
+        await message.answer(f"{u['nick']} вылетел из чата!")
     elif cmd == "мут":
         until = datetime.now() + timedelta(minutes=10)
         await message.chat.restrict(target.id, permissions=types.ChatPermissions(can_send_messages=False), until_date=until)
         await message.answer(f"{u['nick']} в муте на 10 мин.")
     save_db(db)
 
-# --- ОБРАБОТЧИК СООБЩЕНИЙ ---
+# --- ИНФО КОМАНДЫ ---
+
+@dp.message(F.text.lower() == "кто админ")
+async def who_is_admin(message: Message):
+    admins = [f"• <a href='tg://user?id={uid}'>{u['nick']}</a> — {u['stars']} ⭐" for uid, u in db["users"].items() if u["stars"] >= 2]
+    resp = "<b>📜 Администрация Стаи:</b>\n" + "\n".join(admins) if admins else "В стае только Вожак."
+    await message.answer(resp)
+
+@dp.message(Command("кд", prefix="!"))
+async def setup_kd(message: Message, command: CommandObject):
+    if not await has_access(message, "кд"): return
+    try:
+        args = command.args.split()
+        cmd, rank = args[0].lower(), int(args[1])
+        db["permissions"][cmd] = rank
+        save_db(db)
+        await message.answer(f"✅ Команда <b>{cmd}</b> теперь от {rank} ⭐")
+    except:
+        await message.answer("Пример: <code>!кд бан 5</code>")
+
+@dp.message(F.text.startswith("+ник "))
+async def set_nick(message: Message):
+    new_nick = message.text[5:].strip()[:20]
+    u = get_u(message.from_user.id); u["nick"] = new_nick
+    save_db(db); await message.answer(f"Теперь ты <b>{new_nick}</b>")
+
+@dp.message(F.text.lower() == "топ акт")
+async def top_act(message: Message):
+    sorted_u = sorted(db["users"].items(), key=lambda x: x[1]["messages"], reverse=True)[:30]
+    res = "<b>🏆 Топ активности:</b>\n\n"
+    for i, (uid, data) in enumerate(sorted_u, 1):
+        res += f"{i}. <a href='tg://user?id={uid}'>{data['nick']}</a> — {data['messages']} мсг.\n"
+    await message.answer(res)
+
+# --- ПРИВЕТСТВИЯ ---
+@dp.chat_member()
+async def member_update(event: ChatMemberUpdated):
+    if event.new_chat_member.status == "member":
+        welcome_text = (
+            "Привет!\nДобро пожаловать в Драконий край 🐲\n\n"
+            "Рады видеть тебя в нашем чате. Здесь собираются люди, которым близка вселенная «Как приручить дракона»: "
+            "обсуждения, теории, размышления и живое общение — без лишнего шума и конфликтов\n\n"
+            "Чувствуй себя комфортно, знакомься, участвуй в разговорах — будем рады твоему присутствию 😀\n"
+            "Если возникнут вопросы или понадобится помощь, смело обращайся к администрации\n\n"
+            "Приятного общения и хорошего дня 🐉✨"
+        )
+        try:
+            await bot.send_animation(event.chat.id, "https://media1.tenor.com/m/-5D-bYxCvFAAAAAC/httyd-yeah.gif", caption=welcome_text)
+        except: pass
+
+# --- ОБЩИЙ ОБРАБОТЧИК ---
 @dp.message()
 async def main_handler(msg: Message):
     if not msg.from_user or msg.from_user.is_bot: return
@@ -148,37 +191,17 @@ async def main_handler(msg: Message):
         db["media_counter"][uid] = 0
     save_db(db)
 
-# --- ПРИВЕТСТВИЯ (ИСПРАВЛЕНО) ---
-@dp.chat_member()
-async def member_update(event: ChatMemberUpdated):
-    if event.new_chat_member.status == "member":
-        welcome_text = "Привет!\nДобро пожаловать в Драконий край 🐲"
-        try:
-            await bot.send_animation(
-                event.chat.id, 
-                "https://media1.tenor.com/m/-5D-bYxCvFAAAAAC/httyd-yeah.gif", 
-                caption=welcome_text
-            )
-        except:
-            pass
-
-# --- РАСПИСАНИЕ ---
 async def scheduled_msg(text, gif):
-    try:
-        await bot.send_animation(CHAT_ID, gif, caption=text)
+    try: await bot.send_animation(CHAT_ID, gif, caption=text)
     except: pass
 
 async def main():
     scheduler.add_job(scheduled_msg, "cron", hour=9, minute=0, args=["Доброе утро, Стая!", "https://media1.tenor.com/m/TphIrQuFImkAAAAC/drake-how-to-train-your-dragon.gif"])
     scheduler.add_job(scheduled_msg, "cron", hour=22, minute=0, args=["Спокойной ночи!", "https://media1.tenor.com/m/C3P-yay4lF8AAAAC/httyd-ruffnut.gif"])
     scheduler.start()
-    
     print("Бот успешно запущен!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit):
-        pass
+    asyncio.run(main())
         
