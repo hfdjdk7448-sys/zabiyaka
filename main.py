@@ -11,7 +11,8 @@ from aiohttp import web
 # --- НАСТРОЙКИ ---
 TOKEN = "8463010853:AAE7piw8PFlxNCzKw9vIrmdJmTYAm1rBnuI"
 CHAT_ID = -1002508735096  
-OWNER_ID = 7457754972  # Твой ID
+# Список ID владельцев (Вожаков)
+OWNER_IDS = [7457754972, 7805872198]
 OWNER_HANDLE = "@odos765" 
 DB_FILE = "dragon_data.json"
 
@@ -46,18 +47,23 @@ def save_db(data):
 db = load_db()
 
 def get_u(uid, name="Викинг"):
-    uid = str(uid)
-    if uid not in db["users"]:
-        db["users"][uid] = {
+    uid_str = str(uid)
+    uid_int = int(uid)
+    
+    if uid_str not in db["users"]:
+        db["users"][uid_str] = {
             "nick": name, 
-            "stars": 5 if int(uid) == OWNER_ID else 1, 
+            "stars": 5 if uid_int in OWNER_IDS else 1, 
             "messages": 0, "warns": [], "desc": "Обычный житель Олуха",
             "joined": datetime.now().strftime("%d.%m.%Y"), "stats": {"day": 0}
         }
-    if int(uid) == OWNER_ID: 
-        db["users"][uid]["stars"] = 5
-        db["users"][uid]["nick"] = OWNER_HANDLE # Автоматически ставим твой ник
-    return db["users"][uid]
+    
+    # Принудительная проверка на владельца при каждом обращении
+    if uid_int in OWNER_IDS:
+        db["users"][uid_str]["stars"] = 5
+        db["users"][uid_str]["nick"] = OWNER_HANDLE
+        
+    return db["users"][uid_str]
 
 async def check_perm(msg: Message, cmd: str):
     u = get_u(msg.from_user.id)
@@ -67,15 +73,10 @@ async def check_perm(msg: Message, cmd: str):
         return False
     return True
 
-# --- КОМАНДА: КТО АДМИН (ИСПРАВЛЕНО) ---
+# --- КОМАНДА: КТО АДМИН ---
 @dp.message(F.text.lower() == "кто админ")
 async def show_admins(msg: Message):
-    # Фильтруем тех, у кого есть звезды, и сортируем по убыванию (от 5 до 1)
-    admins = [
-        (uid, u) for uid, u in db["users"].items() 
-        if u.get("stars", 0) >= 1 
-    ]
-    # Сортировка: сначала те, у кого больше звезд
+    admins = [(uid, u) for uid, u in db["users"].items() if u.get("stars", 0) >= 1]
     admins.sort(key=lambda x: x[1].get("stars", 0), reverse=True)
 
     if not admins:
@@ -83,15 +84,13 @@ async def show_admins(msg: Message):
 
     res = "<b>📜 Иерархия Драконьего Края:</b>\n"
     res += "━━━━━━━━━━━━━━\n"
-    
     for uid, u in admins:
         star_icon = "👑" if u['stars'] == 5 else "🛡"
         res += f"{star_icon} {u['nick']} — <b>{u['stars']} ⭐</b>\n"
-    
     res += "━━━━━━━━━━━━━━"
     await msg.answer(res)
 
-# --- МОДЕРАЦИЯ (ГИФ + ТВОЙ ТЕКСТ) ---
+# --- МОДЕРАЦИЯ ---
 @dp.message(F.text.lower().startswith(("бан", "мут", "варн", "кик", "!бан", "!мут", "!варн", "!кик")))
 async def moderate(msg: Message):
     text_parts = msg.text.lower().replace("!", "").split()
@@ -156,7 +155,12 @@ async def show_top(msg: Message):
 @dp.chat_member()
 async def welcome(event: ChatMemberUpdated):
     if event.new_chat_member.status == "member":
-        text = "Привет!\nДобро пожаловать в Драконий край 🐲\n\nРады видеть тебя в нашем чате. Здесь собираются люди, которым близка вселенная «Как приручить дракона».\n\nЧувствуй себя комфортно, будем рады твоему присутствию 😀\nПриятного общения и хорошего дня 🐉✨"
+        text = (
+            "Привет!\nДобро пожаловать в Драконий край 🐲\n\n"
+            "Рады видеть тебя в нашем чате. Здесь собираются люди, которым близка вселенная «Как приручить дракона».\n\n"
+            "Чувствуй себя комфортно, знакомься, участвуй в разговорах — будем рады твоему присутствию 😀\n"
+            "Приятного общения и хорошего дня 🐉✨"
+        )
         try: await bot.send_animation(event.chat.id, WELCOME_GIF, caption=text)
         except: pass
 
@@ -175,4 +179,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-            
+    
