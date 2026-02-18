@@ -1,225 +1,47 @@
-import asyncio
-import json
-import os
-from datetime import datetime, timedelta
-from aiogram import Bot, Dispatcher, F, types
-from aiogram.filters import Command, CommandObject
-from aiogram.types import Message, ChatMemberUpdated, ContentType
+import asyncio, os, pytz
+from datetime import datetime
+from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiohttp import web
 
-# --- НАСТРОЙКИ ---
+from admin import admin_router
+from auto import auto_router
+from profiles import profile_router
+from database import load_db, save_db, get_u
+
 TOKEN = "8463010853:AAE7piw8PFlxNCzKw9vIrmdJmTYAm1rBnuI"
-DB_FILE = "dragon_data.json"
-PUNISH_GIF = "https://media1.tenor.com/m/2DfpWS8cP48AAAAd/tuffnut-ruffnut.gif"
-WELCOME_GIF = "https://media1.tenor.com/m/-5D-bYxCvFAAAAAC/httyd-yeah.gif"
+CHAT_ID = -1002508735096 
 
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
 dp = Dispatcher()
+dp.include_routers(admin_router, auto_router, profile_router)
 
-# Ранги
-RANK_NAMES = {
-    5: "Вожак",
-    4: "Совожак",
-    3: "Старейшина",
-    2: "Опытный викинг",
-    1: "Житель Олуха"
-}
-
-# --- ВЕБ-СЕРВЕР ---
-async def handle(request): return web.Response(text="Бот Стаи активен!")
-async def start_web_server():
-    app = web.Application()
-    app.router.add_get('/', handle)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', int(os.environ.get("PORT", 8080)))
-    await site.start()
-
-# --- БАЗА ДАННЫХ ---
-def load_db():
-    if os.path.exists(DB_FILE):
-        try:
-            with open(DB_FILE, "r", encoding="utf-8") as f: return json.load(f)
-        except: pass
-    return {
-        "users": {}, 
-        "permissions": {"варн": 3, "бан": 5, "мут": 4, "кик": 3, "повысить": 5},
-        "owner_set": False
-    }
-
-def save_db(data):
-    with open(DB_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=4)
-
-db = load_db()
-
-def get_u(uid, name="Викинг"):
-    uid_str = str(uid)
-    if uid_str not in db["users"]:
-        db["users"][uid_str] = {
-            "nick": name, "stars": 1, "messages": 0, "warns": [], 
-            "desc": "Обычный житель Олуха", "joined": datetime.now().strftime("%d.%m.%Y"), 
-            "stats": {"day": 0}
-        }
-    return db["users"][uid_str]
-
-async def check_perm(msg: Message, cmd: str):
-    u = get_u(msg.from_user.id)
-    # Если команда "понизить", проверяем разрешение для "повысить"
-    check_cmd = "повысить" if cmd.lower() == "понизить" else cmd.lower()
-    req = db["permissions"].get(check_cmd, 1)
-    if u["stars"] < req:
-        await msg.reply(f"Ранг маловат! Нужно минимум {req} ⭐ ({RANK_NAMES.get(req)})")
-        return False
-    return True
-
-# --- КОМАНДА: ИНИЦИАЛИЗАЦИЯ ---
-@dp.message(Command("set_chat"))
-async def set_chat(msg: Message):
-    if db.get("owner_set"):
-        return await msg.reply("Вожак уже назначен!")
-    
-    u = get_u(msg.from_user.id, msg.from_user.first_name)
-    u["stars"] = 5
-    db["owner_set"] = True
-    save_db(db)
-    await msg.reply(f"Вы первый! Теперь вы <b>Вожак</b> (5 ⭐) этой стаи.")
-
-# --- УПРАВЛЕНИЕ РАНГАМИ ---
-@dp.message(F.text.lower().startswith("повысить"))
-async def promote(msg: Message):
-    if not await check_perm(msg, "повысить"): return
-    if not msg.reply_to_message: return await msg.reply("Ответьте на сообщение того, кого повышаем!")
-    
-    try:
-        new_rank = int(msg.text.split()[-1])
-        if new_rank < 1 or new_rank > 5: raise ValueError
-    except:
-        return await msg.reply("Укажите ранг числом от 1 до 5 (например: повысить 4)")
-
-    target = get_u(msg.reply_to_message.from_user.id, msg.reply_to_message.from_user.first_name)
-    target["stars"] = new_rank
-    save_db(db)
-    await msg.reply(f"Викинг {target['nick']} теперь <b>{RANK_NAMES[new_rank]}</b> ({new_rank} ⭐)!")
-
-@dp.message(F.text.lower() == "понизить")
-async def demote(msg: Message):
-    if not await check_perm(msg, "понизить"): return
-    if not msg.reply_to_message: return
-    
-    target = get_u(msg.reply_to_message.from_user.id)
-    target["stars"] = 1
-    save_db(db)
-    await msg.reply(f"Викинг {target['nick']} был полностью разжалован до Жителя Олуха.")
-
-@dp.message(F.text.lower().startswith("кд повысить"))
-async def set_access_promote(msg: Message):
-    if get_u(msg.from_user.id)["stars"] < 5: return
-    try:
-        rank = int(msg.text.split()[-1])
-        db["permissions"]["повысить"] = rank
-        save_db(db)
-        await msg.reply(f"Команды управления рангами теперь доступны от {rank} ⭐")
-    except: pass
-
-# --- КОМАНДА: КТО АДМИН ---
-@dp.message(F.text.lower() == "кто админ")
-async def show_admins(msg: Message):
-    admins = [(uid, u) for uid, u in db["users"].items() if u.get("stars", 0) >= 2]
-    admins.sort(key=lambda x: x[1].get("stars", 0), reverse=True)
-
-    if not admins:
-        return await msg.answer("В стае пока нет назначенных админов.")
-
-    res = "<b>📜 Иерархия Драконьего Края:</b>\n━━━━━━━━━━━━━━\n"
-    for uid, u in admins:
-        icon = "👑" if u['stars'] == 5 else "🛡"
-        res += f"{icon} {u['nick']} — <b>{RANK_NAMES.get(u['stars'], 'Викинг')}</b> ({u['stars']} ⭐)\n"
-    res += "━━━━━━━━━━━━━━"
-    await msg.answer(res)
-
-# --- МОДЕРАЦИЯ ---
-@dp.message(F.text.lower().startswith(("бан", "мут", "варн", "кик", "!бан", "!мут", "!варн", "!кик")))
-async def moderate(msg: Message):
-    text_parts = msg.text.lower().replace("!", "").split()
-    cmd = text_parts[0]
-    if not await check_perm(msg, cmd): return
-    if not msg.reply_to_message: return await msg.reply("Нужен ответ на сообщение нарушителя!")
-    
-    admin = get_u(msg.from_user.id)
-    target_user = msg.reply_to_message.from_user
-    u = get_u(target_user.id, target_user.first_name)
-    
-    reason = " ".join(msg.text.split()[1:]) if len(msg.text.split()) > 1 else "Нарушение правил"
-    duration = "бессрочно"
-    action_name = ""
-
-    if cmd == "варн":
-        action_name = "Варн"; duration = "24 часа"
-        u["warns"].append({"reason": reason, "admin": admin["nick"], "expiry": (datetime.now() + timedelta(days=1)).timestamp()})
-        if len([w for w in u["warns"] if w["expiry"] > datetime.now().timestamp()]) >= 5:
-            await msg.chat.ban(target_user.id); action_name = "Бан (5/5 варнов)"
-    elif cmd == "мут":
-        action_name = "Мут"; duration = "15 минут"
-        until_date = datetime.now() + timedelta(minutes=15)
-        await msg.chat.restrict(target_user.id, permissions=types.ChatPermissions(can_send_messages=False), until_date=until_date)
-    elif cmd == "бан":
-        action_name = "Бан"; await msg.chat.ban(target_user.id)
-    elif cmd == "кик":
-        action_name = "Кик"; duration = "моментально"
-        await msg.chat.ban(target_user.id); await msg.chat.unban(target_user.id)
-
-    save_db(db)
-    caption = f"Вы нарушаете спокойствие Драконьего Края! 😡\n\nВам выдан <b>{action_name}</b> на <b>({duration})</b>\n<b>Причина:</b> {reason}\n<b>Кто выдал:</b> {admin['nick']}"
-    await msg.answer_animation(PUNISH_GIF, caption=caption)
-
-# --- ПРОФИЛЬ И ТОП ---
-@dp.message(F.text.lower() == "кто я")
-async def who_am_i(msg: Message):
-    u = get_u(msg.from_user.id, msg.from_user.first_name)
-    all_u = sorted(db["users"].items(), key=lambda x: x[1].get("messages", 0), reverse=True)
-    pos = next((i for i, (uid, _) in enumerate(all_u, 1) if int(uid) == msg.from_user.id), 0)
-    text = (
-        f"<b>📜 Карточка Викинга</b>\n━━━━━━━━━━━━━━\n"
-        f"👤 <b>Ник:</b> {u['nick']}\n⭐ <b>Ранг:</b> {RANK_NAMES.get(u['stars'])} ({u['stars']} ⭐)\n"
-        f"🏆 <b>Место в топе:</b> {pos}\n━━━━━━━━━━━━━━\n"
-        f"💬 <b>Сообщений:</b> {u['messages']}\n━━━━━━━━━━━━━━\n"
-        f"📝 <b>Описание:</b>\n<i>{u.get('desc', 'Пусто')}</i>"
-    )
-    await msg.reply(text)
-
-@dp.message(F.text.lower().startswith("+описание"))
-async def set_desc(msg: Message):
-    u = get_u(msg.from_user.id); u["desc"] = msg.text[10:].strip()[:150]
-    save_db(db); await msg.reply("✅ Описание обновлено!")
-
-@dp.message(F.text.lower() == "топ акт")
-async def show_top(msg: Message):
-    top = sorted(db["users"].items(), key=lambda x: x[1].get("messages", 0), reverse=True)[:15]
-    res = "<b>🏆 Топ активности:</b>\n\n"
-    for i, (uid, d) in enumerate(top, 1): res += f"{i}. {d['nick']} — {d.get('messages', 0)} мсг.\n"
-    await msg.answer(res)
-
-# --- ПРИВЕТСТВИЕ ---
-@dp.chat_member()
-async def welcome(event: ChatMemberUpdated):
-    if event.new_chat_member.status == "member":
-        text = "Привет!\nДобро пожаловать в Драконий край 🐲\n\nРады видеть тебя в нашем чате.\nЧувствуй себя комфортно 😀\nХорошего дня 🐉✨"
-        try: await bot.send_animation(event.chat.id, WELCOME_GIF, caption=text)
-        except: pass
-
-# --- ОБРАБОТЧИК ---
 @dp.message()
-async def h(msg: Message):
+async def msg_handler(msg: types.Message):
     if not msg.from_user or msg.from_user.is_bot: return
-    u = get_u(msg.from_user.id, msg.from_user.first_name)
+    db = load_db()
+    u = get_u(db, msg.from_user.id, msg.from_user.first_name)
     u["messages"] += 1
     u["stats"]["day"] = u["stats"].get("day", 0) + 1
     save_db(db)
 
+async def scheduler():
+    tz = pytz.timezone('Europe/Moscow')
+    while True:
+        now = datetime.now(tz)
+        if now.minute == 0:
+            if now.hour == 8:
+                await bot.send_animation(CHAT_ID, "https://media1.tenor.com/-5D-bYxCvFAAAAAd/httyd-yeah.gif", caption="Доброе утро,Стая!🌞✨")
+            elif now.hour == 21:
+                await bot.send_animation(CHAT_ID, "https://media1.tenor.com/C3P-yay4lF8AAAAC/httyd-ruffnut.gif", caption="Спокойной ночи,Стая!🌙🌥")
+            await asyncio.sleep(3600)
+        await asyncio.sleep(30)
+
 async def main():
-    asyncio.create_task(start_web_server())
+    asyncio.create_task(scheduler())
+    app = web.Application(); app.router.add_get("/", lambda r: web.Response(text="OK"))
+    runner = web.AppRunner(app); await runner.setup()
+    await web.TCPSite(runner, "0.0.0.0", int(os.environ.get("PORT", 8080))).start()
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
