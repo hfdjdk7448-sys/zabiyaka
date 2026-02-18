@@ -10,17 +10,21 @@ from aiohttp import web
 
 # --- НАСТРОЙКИ ---
 TOKEN = "8463010853:AAE7piw8PFlxNCzKw9vIrmdJmTYAm1rBnuI"
-CHAT_ID = -1002508735096  
-# Список ID владельцев (Вожаков)
-OWNER_IDS = [7457754972, 7805872198]
-OWNER_HANDLE = "@odos765" 
 DB_FILE = "dragon_data.json"
-
 PUNISH_GIF = "https://media1.tenor.com/m/2DfpWS8cP48AAAAd/tuffnut-ruffnut.gif"
 WELCOME_GIF = "https://media1.tenor.com/m/-5D-bYxCvFAAAAAC/httyd-yeah.gif"
 
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
 dp = Dispatcher()
+
+# Ранги
+RANK_NAMES = {
+    5: "Вожак",
+    4: "Совожак",
+    3: "Старейшина",
+    2: "Опытный викинг",
+    1: "Житель Олуха"
+}
 
 # --- ВЕБ-СЕРВЕР ---
 async def handle(request): return web.Response(text="Бот Стаи активен!")
@@ -38,7 +42,11 @@ def load_db():
         try:
             with open(DB_FILE, "r", encoding="utf-8") as f: return json.load(f)
         except: pass
-    return {"users": {}, "permissions": {"варн": 3, "бан": 5, "мут": 4, "кик": 3}}
+    return {
+        "users": {}, 
+        "permissions": {"варн": 3, "бан": 5, "мут": 4, "кик": 3, "повысить": 5},
+        "owner_set": False
+    }
 
 def save_db(data):
     with open(DB_FILE, "w", encoding="utf-8") as f:
@@ -48,45 +56,86 @@ db = load_db()
 
 def get_u(uid, name="Викинг"):
     uid_str = str(uid)
-    uid_int = int(uid)
-    
     if uid_str not in db["users"]:
         db["users"][uid_str] = {
-            "nick": name, 
-            "stars": 5 if uid_int in OWNER_IDS else 1, 
-            "messages": 0, "warns": [], "desc": "Обычный житель Олуха",
-            "joined": datetime.now().strftime("%d.%m.%Y"), "stats": {"day": 0}
+            "nick": name, "stars": 1, "messages": 0, "warns": [], 
+            "desc": "Обычный житель Олуха", "joined": datetime.now().strftime("%d.%m.%Y"), 
+            "stats": {"day": 0}
         }
-    
-    # Принудительная проверка на владельца при каждом обращении
-    if uid_int in OWNER_IDS:
-        db["users"][uid_str]["stars"] = 5
-        db["users"][uid_str]["nick"] = OWNER_HANDLE
-        
     return db["users"][uid_str]
 
 async def check_perm(msg: Message, cmd: str):
     u = get_u(msg.from_user.id)
-    req = db["permissions"].get(cmd.lower(), 1)
+    # Если команда "понизить", проверяем разрешение для "повысить"
+    check_cmd = "повысить" if cmd.lower() == "понизить" else cmd.lower()
+    req = db["permissions"].get(check_cmd, 1)
     if u["stars"] < req:
-        await msg.reply(f"Ранг маловат! Нужно минимум {req} ⭐")
+        await msg.reply(f"Ранг маловат! Нужно минимум {req} ⭐ ({RANK_NAMES.get(req)})")
         return False
     return True
+
+# --- КОМАНДА: ИНИЦИАЛИЗАЦИЯ ---
+@dp.message(Command("set_chat"))
+async def set_chat(msg: Message):
+    if db.get("owner_set"):
+        return await msg.reply("Вожак уже назначен!")
+    
+    u = get_u(msg.from_user.id, msg.from_user.first_name)
+    u["stars"] = 5
+    db["owner_set"] = True
+    save_db(db)
+    await msg.reply(f"Вы первый! Теперь вы <b>Вожак</b> (5 ⭐) этой стаи.")
+
+# --- УПРАВЛЕНИЕ РАНГАМИ ---
+@dp.message(F.text.lower().startswith("повысить"))
+async def promote(msg: Message):
+    if not await check_perm(msg, "повысить"): return
+    if not msg.reply_to_message: return await msg.reply("Ответьте на сообщение того, кого повышаем!")
+    
+    try:
+        new_rank = int(msg.text.split()[-1])
+        if new_rank < 1 or new_rank > 5: raise ValueError
+    except:
+        return await msg.reply("Укажите ранг числом от 1 до 5 (например: повысить 4)")
+
+    target = get_u(msg.reply_to_message.from_user.id, msg.reply_to_message.from_user.first_name)
+    target["stars"] = new_rank
+    save_db(db)
+    await msg.reply(f"Викинг {target['nick']} теперь <b>{RANK_NAMES[new_rank]}</b> ({new_rank} ⭐)!")
+
+@dp.message(F.text.lower() == "понизить")
+async def demote(msg: Message):
+    if not await check_perm(msg, "понизить"): return
+    if not msg.reply_to_message: return
+    
+    target = get_u(msg.reply_to_message.from_user.id)
+    target["stars"] = 1
+    save_db(db)
+    await msg.reply(f"Викинг {target['nick']} был полностью разжалован до Жителя Олуха.")
+
+@dp.message(F.text.lower().startswith("кд повысить"))
+async def set_access_promote(msg: Message):
+    if get_u(msg.from_user.id)["stars"] < 5: return
+    try:
+        rank = int(msg.text.split()[-1])
+        db["permissions"]["повысить"] = rank
+        save_db(db)
+        await msg.reply(f"Команды управления рангами теперь доступны от {rank} ⭐")
+    except: pass
 
 # --- КОМАНДА: КТО АДМИН ---
 @dp.message(F.text.lower() == "кто админ")
 async def show_admins(msg: Message):
-    admins = [(uid, u) for uid, u in db["users"].items() if u.get("stars", 0) >= 1]
+    admins = [(uid, u) for uid, u in db["users"].items() if u.get("stars", 0) >= 2]
     admins.sort(key=lambda x: x[1].get("stars", 0), reverse=True)
 
     if not admins:
-        return await msg.answer("В стае пока нет иерархии.")
+        return await msg.answer("В стае пока нет назначенных админов.")
 
-    res = "<b>📜 Иерархия Драконьего Края:</b>\n"
-    res += "━━━━━━━━━━━━━━\n"
+    res = "<b>📜 Иерархия Драконьего Края:</b>\n━━━━━━━━━━━━━━\n"
     for uid, u in admins:
-        star_icon = "👑" if u['stars'] == 5 else "🛡"
-        res += f"{star_icon} {u['nick']} — <b>{u['stars']} ⭐</b>\n"
+        icon = "👑" if u['stars'] == 5 else "🛡"
+        res += f"{icon} {u['nick']} — <b>{RANK_NAMES.get(u['stars'], 'Викинг')}</b> ({u['stars']} ⭐)\n"
     res += "━━━━━━━━━━━━━━"
     await msg.answer(res)
 
@@ -113,7 +162,8 @@ async def moderate(msg: Message):
             await msg.chat.ban(target_user.id); action_name = "Бан (5/5 варнов)"
     elif cmd == "мут":
         action_name = "Мут"; duration = "15 минут"
-        await msg.chat.restrict(target_user.id, permissions=types.ChatPermissions(can_send_messages=False), until_date=datetime.now() + timedelta(minutes=15))
+        until_date = datetime.now() + timedelta(minutes=15)
+        await msg.chat.restrict(target_user.id, permissions=types.ChatPermissions(can_send_messages=False), until_date=until_date)
     elif cmd == "бан":
         action_name = "Бан"; await msg.chat.ban(target_user.id)
     elif cmd == "кик":
@@ -124,7 +174,7 @@ async def moderate(msg: Message):
     caption = f"Вы нарушаете спокойствие Драконьего Края! 😡\n\nВам выдан <b>{action_name}</b> на <b>({duration})</b>\n<b>Причина:</b> {reason}\n<b>Кто выдал:</b> {admin['nick']}"
     await msg.answer_animation(PUNISH_GIF, caption=caption)
 
-# --- КАРТОЧКА КТО Я ---
+# --- ПРОФИЛЬ И ТОП ---
 @dp.message(F.text.lower() == "кто я")
 async def who_am_i(msg: Message):
     u = get_u(msg.from_user.id, msg.from_user.first_name)
@@ -132,10 +182,10 @@ async def who_am_i(msg: Message):
     pos = next((i for i, (uid, _) in enumerate(all_u, 1) if int(uid) == msg.from_user.id), 0)
     text = (
         f"<b>📜 Карточка Викинга</b>\n━━━━━━━━━━━━━━\n"
-        f"👤 <b>Ник:</b> {u['nick']}\n⭐ <b>Ранг:</b> {u['stars']} звезд\n"
+        f"👤 <b>Ник:</b> {u['nick']}\n⭐ <b>Ранг:</b> {RANK_NAMES.get(u['stars'])} ({u['stars']} ⭐)\n"
         f"🏆 <b>Место в топе:</b> {pos}\n━━━━━━━━━━━━━━\n"
-        f"💬 <b>Сообщений:</b>\n• Всего: {u['messages']}\n• За сегодня: {u['stats'].get('day', 0)}\n"
-        f"━━━━━━━━━━━━━━\n📝 <b>Описание:</b>\n<i>{u.get('desc', 'Пусто')}</i>"
+        f"💬 <b>Сообщений:</b> {u['messages']}\n━━━━━━━━━━━━━━\n"
+        f"📝 <b>Описание:</b>\n<i>{u.get('desc', 'Пусто')}</i>"
     )
     await msg.reply(text)
 
@@ -155,12 +205,7 @@ async def show_top(msg: Message):
 @dp.chat_member()
 async def welcome(event: ChatMemberUpdated):
     if event.new_chat_member.status == "member":
-        text = (
-            "Привет!\nДобро пожаловать в Драконий край 🐲\n\n"
-            "Рады видеть тебя в нашем чате. Здесь собираются люди, которым близка вселенная «Как приручить дракона».\n\n"
-            "Чувствуй себя комфортно, знакомься, участвуй в разговорах — будем рады твоему присутствию 😀\n"
-            "Приятного общения и хорошего дня 🐉✨"
-        )
+        text = "Привет!\nДобро пожаловать в Драконий край 🐲\n\nРады видеть тебя в нашем чате.\nЧувствуй себя комфортно 😀\nХорошего дня 🐉✨"
         try: await bot.send_animation(event.chat.id, WELCOME_GIF, caption=text)
         except: pass
 
