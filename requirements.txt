@@ -1,2 +1,4 @@
 aiogram==3.17.0
-python-dotenv
+aiohttp==3.11.11
+pydantic==2.10.6
+magic-filter==1.0.12
