@@ -91,8 +91,9 @@ def parse_args(text):
     return reason, t_delta
 
 # ==========================================
-# 3. КОМАНДЫ
+# 3. КОМАНДЫ (РЕГИСТРИРУЕМ ВАЖНЫЕ ПЕРВЫМИ)
 # ==========================================
+
 @dp.message(F.text.lower() == "список команд")
 async def cmd_list(msg: Message):
     if not await check_access(msg, "список команд"): return
@@ -117,9 +118,15 @@ async def cmd_list(msg: Message):
 
 @dp.message(F.text.lower() == "размут")
 async def cmd_unmute(msg: Message):
-    if not await check_access(msg, "мут") or not msg.reply_to_message: return
+    if not await check_access(msg, "размут") or not msg.reply_to_message: return
     target = msg.reply_to_message.from_user
-    await msg.chat.restrict(target.id, permissions=ChatPermissions(can_send_messages=True, can_send_media_messages=True, can_send_other_messages=True, can_add_web_page_previews=True))
+    await msg.chat.restrict(target.id, permissions=ChatPermissions(
+        can_send_messages=True, 
+        can_send_media_messages=True, 
+        can_send_other_messages=True, 
+        can_add_web_page_previews=True,
+        can_send_polls=True
+    ))
     await msg.reply(f"🔊 Голос викинга {hlink(target.first_name, f'tg://user?id={target.id}')} снова слышен!")
 
 @dp.message(F.text.lower() == "разбан")
@@ -201,16 +208,27 @@ async def cmd_edit_profile(msg: Message):
 @dp.chat_member()
 async def on_join(event: ChatMemberUpdated):
     if event.new_chat_member.status == "member":
-        text = ("Привет!\nДобро пожаловать в Драконий край 🐲\n\nРады видеть тебя в нашем чате. Здесь собираются люди, которым близка вселенная «Как приручить дракона»...\n\nПриятного общения! 🐉✨")
+        text = (
+            "Привет!\nДобро пожаловать в Драконий край 🐲\n\n"
+            "Рады видеть тебя в нашем чате. Здесь собираются люди, которым близка вселенная «Как приручить дракона»: "
+            "обсуждения, теории, размышления и живое общение — без лишнего шума и конфликтов\n\n"
+            "Чувствуй себя комфортно, знакомься, участвуй в разговорах — будем рады твоему присутствию 😀\n"
+            "Если возникнут вопросы или понадобится помощь, смело обращайся к администрации\n\n"
+            "Приятного общения и хорошего дня 🐉✨"
+        )
         await bot.send_animation(event.chat.id, WELCOME_GIF, caption=text)
 
 async def check_spam(msg: Message):
-    if msg.content_type not in ['sticker', 'animation'] and not (msg.text and re.search(r'[\U00010000-\U0010ffff]', msg.text)): return False
+    if not msg.from_user: return False
     uid = msg.from_user.id; now = datetime.now()
     data = spam_tracker.get(uid, {'count': 0, 'msgs': [], 'last_time': now})
+    
     if now - data['last_time'] < timedelta(seconds=10): data['count'] += 1
     else: data['count'] = 1
-    data['msgs'].append(msg.message_id); data['last_time'] = now; spam_tracker[uid] = data
+    
+    data['msgs'].append(msg.message_id)
+    data['last_time'] = now; spam_tracker[uid] = data
+    
     if data['count'] >= 5:
         for m_id in data['msgs']: 
             try: await bot.delete_message(msg.chat.id, m_id)
@@ -236,6 +254,8 @@ async def scheduler():
 @dp.message()
 async def global_handler(msg: Message):
     if not msg.from_user or msg.from_user.is_bot: return
+    # Если это текстовая команда из списка выше, этот хендлер её не тронет,
+    # так как aiogram вызовет первый подходящий хендлер.
     if await check_spam(msg): return
     db = load_db(); check_reset(db)
     u = get_u(db, msg.from_user.id, msg.from_user.first_name)
